@@ -1,0 +1,27 @@
+[
+  {
+    "Nombre":"La Isla",
+    "Instalacion":"06\/07\/2019",
+    "Energia":"Electrica",
+    "Operador":"Claro",
+    "TitularLinea":"Mis Olas SAC",
+    "Linea":871357673,
+    "Red":"CLARO-B612-F08B",
+    "IpRed":"192.168.1.1",
+    "UsuarioModem":"-",
+    "ClaveModem":"ltecl4r0",
+    "ClaveWifi":"NeEHLh75hJ",
+    "IpCam":"192.168.1.108",
+    "Marca":"Dahua",
+    "Modelo":"DH-SD49225XAN-HNR",
+    "NumeroSerie":"6L0524FPAJ1ADF1",
+    "RTMP ":"rtsp:\/\/146.190.64.151:8554\/laisla",
+    "Host":"Luisfer Surf Camp",
+    "ContactoHost":51932686596,
+    "Ubicacion":"Punta Hermosa",
+    "Latitud":-12.337904,
+    "Longitud":-76.820525,
+    "Tecnico":"Luis Gomez",
+    "ContactoTecnico":51990224716
+  }
+]

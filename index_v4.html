@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Supervisor de Cámaras</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{
+      --bg:#111;--card:#18181b;--muted:#a1a1aa;--ok:#0EA5E9;--bad:#ef4444;--border:#27272a;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:#fff}
+    h1{margin:16px 16px 8px;font-weight:700}
+    .subtitle{margin:0 16px 16px;color:var(--muted);font-size:14px}
+    .grid{display:grid;gap:16px;padding:0 16px 24px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+    .card-header{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 0}
+    .title{font-size:20px;margin:0}
+    .kpi{font-size:14px;color:var(--muted)}
+    .kpi strong{color:#fff}
+    .badge{display:inline-flex;align-items:center;justify-content:center;min-width:48px;height:28px;border-radius:999px;border:1px solid var(--border);font-weight:600}
+    .badge.ok{color:#fff;background:linear-gradient(to right,var(--ok),#22c55e)}
+    .badge.bad{color:#fff;background:linear-gradient(to right,var(--bad),#f59e0b)}
+    .chart-wrap{position:relative;height:160px;padding:8px 16px 0}
+    .sections{display:grid;gap:8px;padding:8px 16px 16px}
+    details{background:#131316;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    summary{list-style:none;cursor:pointer;padding:12px 14px;display:flex;gap:10px;align-items:center}
+    summary::-webkit-details-marker{display:none}
+    .pill{font-size:12px;border:1px solid var(--border);border-radius:999px;padding:2px 8px;color:var(--muted)}
+    .state.off{color:#fff;background:var(--bad);}
+    .state.on{color:#111;background:#22c55e;}
+    .state{font-size:12px;border-radius:6px;padding:2px 6px;font-weight:700}
+    .list{padding:8px 12px 12px;display:grid;gap:8px}
+    .item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:10px}
+    .name{font-weight:600}
+    .muted{color:var(--muted);font-size:12px}
+    .error{margin:0 16px 16px;padding:12px;border:1px solid #7f1d1d;background:#451a1a;border-radius:12px}
+  </style>
+</head>
+<body>
+  <h1>Supervisor de Cámaras</h1>
+  <p class="subtitle" id="subtitle" aria-live="polite">Cargando datos de cámaras…</p>
+
+  <div class="grid" id="countries"></div>
+  <p id="errorBox" class="error" style="display:none"></p>
+
+  <script>
+    // === Config ===
+    const apiUrl = 'https://cams.misolas.com/v1/cameras/';
+    const countries = [
+      { id: '1', name: 'Perú' },
+      { id: '2', name: 'Chile' }
+    ];
+
+    // Mapa de charts por país para actualizar sin recrear
+    const charts = new Map();
+
+    // === Utilidades ===
+    const byStatus = (arr) => ({
+      online: arr.filter(c => (c.status||'').toLowerCase() === 'online'),
+      offline: arr.filter(c => (c.status||'').toLowerCase() !== 'online'),
+    });
+
+    function fmtPercent(n){ return new Intl.NumberFormat('es-PE', { maximumFractionDigits: 0 }).format(n); }
+
+    function el(tag, attrs={}, ...children){
+      const node = document.createElement(tag);
+      Object.entries(attrs).forEach(([k,v]) => {
+        if(v == null) return;
+        if(k === 'class') node.className = v; else if(k === 'text') node.textContent = v; else if(k.startsWith('on')) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+      });
+      children.flat().forEach(ch => {
+        if(ch == null) return;
+        if(typeof ch === 'string') node.appendChild(document.createTextNode(ch)); else node.appendChild(ch);
+      });
+      return node;
+    }
+
+    function renderCountryCard(country, cams){
+      const wrap = el('div', { class: 'card', id: `country-${country.id}` });
+
+      const { online, offline } = byStatus(cams);
+      const total = cams.length;
+      const health = total ? Math.round((online.length/total)*100) : 0;
+
+      // Header
+      const header = el('div', { class: 'card-header' },
+        el('div', {},
+          el('h2', { class: 'title', text: country.name }),
+          el('div', { class: 'kpi', 'aria-live': 'polite' },
+            el('span', { text: 'Offline: ' }),
+            el('strong', { text: offline.length }),
+            el('span', { text: ` / Total: ${total}` })
+          ),
+        ),
+        el('span', { class: `badge ${health >= 90 ? 'ok':'bad'}`, title: 'Salud (online / total)' }, `${fmtPercent(health)}%`)
+      );
+
+      // Chart
+      const chartWrap = el('div', { class: 'chart-wrap' }, el('canvas', { id: `chart-${country.id}` }));
+
+      // Accordions
+      const sections = el('div', { class: 'sections' },
+        buildAccordion('Cámaras offline', offline, 'off'),
+        buildAccordion('Cámaras online', online, 'on')
+      );
+
+      wrap.appendChild(header);
+      wrap.appendChild(chartWrap);
+      wrap.appendChild(sections);
+      return wrap;
+    }
+
+    function buildAccordion(title, list, mode){
+      const countPill = el('span', { class: 'pill' }, `${list.length}`);
+      const statePill = el('span', { class: `state ${mode}` }, mode === 'on' ? 'ONLINE' : 'OFFLINE');
+      const summary = el('summary', {}, statePill, el('strong', { style: 'flex:1' }, ` ${title}`), countPill);
+
+      const container = el('details');
+      container.appendChild(summary);
+
+      const items = list
+        .sort((a,b) => a.name.localeCompare(b.name, 'es'))
+        .map(cam => el('div', { class:'item' },
+          el('div', {},
+            el('div', { class: 'name', text: cam.name || 'Cámara' }),
+            el('div', { class: 'muted' }, (cam.status||'').toUpperCase())
+          ),
+          el('div', { class: 'muted' }, cam.site || cam.location || '')
+        ));
+
+      const listWrap = el('div', { class: 'list' }, items);
+      container.appendChild(listWrap);
+      return container;
+    }
+
+    function upsertChart(countryId, online, offline){
+      const id = `chart-${countryId}`;
+      const ctx = document.getElementById(id).getContext('2d');
+      const existing = charts.get(countryId);
+      const data = { labels:['Online','Offline'], datasets:[{ data:[online, offline], backgroundColor:['#0EA5E9', '#ef4444'] }] };
+      const opts = { plugins:{ legend:{ display:false }, title:{ display:true, text:`Salud de red`, color:'#fff', font:{ size:14 } } }, responsive:true, maintainAspectRatio:false, cutout:'60%', animation:false };
+      if(existing){ existing.data = data; existing.update(); }
+      else { charts.set(countryId, new Chart(ctx, { type:'doughnut', data, options:opts })); }
+    }
+
+    // === Datos + Render ===
+    async function load(){
+      const subtitle = document.getElementById('subtitle');
+      const container = document.getElementById('countries');
+      const errorBox = document.getElementById('errorBox');
+      errorBox.style.display = 'none';
+
+      try{
+        const ctrl = new AbortController();
+        const t = setTimeout(()=>ctrl.abort(), 10000); // 10s
+        const res = await fetch(apiUrl, { signal: ctrl.signal });
+        clearTimeout(t);
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        subtitle.textContent = `Actualizado: ${new Date().toLocaleString('es-PE')}`;
+
+        // Group by country id (string compare)
+        const byCountry = new Map(countries.map(c => [c.id, []]));
+        for(const cam of data){
+          const pid = String(cam.pais ?? cam.country_id ?? cam.country ?? '');
+          if(byCountry.has(pid)) byCountry.get(pid).push(cam);
+        }
+
+        // Render both country cards
+        container.innerHTML = '';
+        countries.forEach(country => {
+          const cams = byCountry.get(country.id) || [];
+          const card = renderCountryCard(country, cams);
+          container.appendChild(card);
+
+          const { online, offline } = byStatus(cams);
+          upsertChart(country.id, online.length, offline.length);
+        });
+
+      }catch(err){
+        console.error('Error cargando las cámaras:', err);
+        errorBox.textContent = 'No se pudo cargar la información. Reintentaremos en el próximo ciclo.';
+        errorBox.style.display = 'block';
+      }
+    }
+
+    load();
+    // refresco cada 10 minutos
+    setInterval(load, 10 * 60 * 1000);
+  </script>
+</body>
+</html>

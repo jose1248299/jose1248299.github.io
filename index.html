@@ -11,7 +11,12 @@
     }
     *{box-sizing:border-box}
     body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:#fff}
-    h1{margin:16px 16px 8px;font-weight:700}
+
+    /* Barra superior con botón */
+    .topbar{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 8px;gap:12px}
+    h1{margin:0;font-weight:700}
+    .actions{display:flex;gap:8px;align-items:center}
+
     .subtitle{margin:0 16px 16px;color:var(--muted);font-size:14px}
     .grid{display:grid;gap:16px;padding:0 16px 24px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
     .card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
@@ -32,17 +37,50 @@
     .state.on{color:#111;background:#22c55e;}
     .state{font-size:12px;border-radius:6px;padding:2px 6px;font-weight:700}
     .list{padding:8px 12px 12px;display:grid;gap:8px}
-    .item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:10px}
+    .item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:10px;cursor:pointer}
     .name{font-weight:600}
     .muted{color:var(--muted);font-size:12px}
     .error{margin:0 16px 16px;padding:12px;border:1px solid #7f1d1d;background:#451a1a;border-radius:12px}
+    .link{cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+    .hidden{display:none}
+
+    /* Vista de detalle */
+    .detail{padding:16px}
+    .detail h2{margin:0 0 8px}
+    .btn{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:#141414;color:#fff;cursor:pointer}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:12px 0}
+
+    /* NUEVO: cards dentro del detalle con layout responsivo */
+    .detail-grid{
+      display:grid;
+      gap:16px;
+      grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+      margin-top:12px;
+    }
+    .card-header-sm{padding:16px 16px 0}
+    .card-header-sm .title{font-size:18px}
+    .card-body{padding:8px 16px 16px}
+
+    /* Botón volver separado del grid */
+    .detail-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
   </style>
 </head>
 <body>
-  <h1>Supervisor de Cámaras</h1>
+  <div class="topbar">
+    <h1>Supervisor de Cámaras</h1>
+    <div class="actions">
+      <button id="refreshBtn" class="btn" aria-live="polite" title="Actualizar ahora">↻ Actualizar</button>
+    </div>
+  </div>
+
   <p class="subtitle" id="subtitle" aria-live="polite">Cargando datos de cámaras…</p>
 
   <div class="grid" id="countries"></div>
+
+  <!-- Vista de detalle -->
+  <section id="detailView" class="detail hidden" aria-live="polite"></section>
+
   <p id="errorBox" class="error" style="display:none"></p>
 
   <script>
@@ -53,143 +91,344 @@
       { id: '2', name: 'Chile' }
     ];
 
-    // Mapa de charts por país para actualizar sin recrear
-    const charts = new Map();
+    const charts = new Map(); // countryId -> Chart instance
+    let currentData = [];
 
-    // === Utilidades ===
+    // === Devices.json ===
+    let devices = [];
+    const devicesByName = new Map();
+    const norm = s => String(s||'').trim().toLowerCase();
+
+    async function loadDevices() {
+      try {
+        const res = await fetch('Devices.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        devices = Array.isArray(json) ? json : [];
+        devicesByName.clear();
+        for (const d of devices) {
+          if (d && d.Nombre) devicesByName.set(norm(d.Nombre), d);
+        }
+      } catch (e) {
+        console.warn('No se pudo cargar Devices.json:', e);
+      }
+    }
+
+    function findDeviceForCam(cam){
+      const byName = devicesByName.get(norm(cam.name));
+      if (byName) return byName;
+      if (cam.site || cam.location) {
+        const target = norm(cam.site || cam.location);
+        const hit = devices.find(d => norm(d.Ubicacion) === target);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    const camIndex = new Map();
+
     const byStatus = (arr) => ({
       online: arr.filter(c => (c.status||'').toLowerCase() === 'online'),
       offline: arr.filter(c => (c.status||'').toLowerCase() !== 'online'),
     });
 
-    function fmtPercent(n){ return new Intl.NumberFormat('es-PE', { maximumFractionDigits: 0 }).format(n); }
+    function fmtPercent(n){ return new Intl.NumberFormat('es-PE',{maximumFractionDigits:0}).format(n); }
 
     function el(tag, attrs={}, ...children){
-      const node = document.createElement(tag);
-      Object.entries(attrs).forEach(([k,v]) => {
-        if(v == null) return;
-        if(k === 'class') node.className = v; else if(k === 'text') node.textContent = v; else if(k.startsWith('on')) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+      const node=document.createElement(tag);
+      Object.entries(attrs).forEach(([k,v])=>{
+        if(v==null)return;
+        if(k==='class')node.className=v;
+        else if(k==='text')node.textContent=v;
+        else if(k.startsWith('on')) node.addEventListener(k.slice(2).toLowerCase(),v);
+        else node.setAttribute(k,v);
       });
-      children.flat().forEach(ch => {
-        if(ch == null) return;
-        if(typeof ch === 'string') node.appendChild(document.createTextNode(ch)); else node.appendChild(ch);
+      children.flat().forEach(ch=>{
+        if(ch==null)return;
+        if(typeof ch==='string')node.appendChild(document.createTextNode(ch));
+        else node.appendChild(ch);
       });
       return node;
     }
 
-    function renderCountryCard(country, cams){
-      const wrap = el('div', { class: 'card', id: `country-${country.id}` });
+    function sectionCard(title, ...children){
+      const wrap = el('div',{class:'card section-card'});
+      const header = el('div',{class:'card-header-sm'}, el('h3',{class:'title',text:title}));
+      const body = el('div',{class:'card-body'});
+      children.flat().forEach(ch => body.appendChild(ch));
+      wrap.appendChild(header);
+      wrap.appendChild(body);
+      return wrap;
+    }
 
-      const { online, offline } = byStatus(cams);
-      const total = cams.length;
-      const health = total ? Math.round((online.length/total)*100) : 0;
-
-      // Header
-      const header = el('div', { class: 'card-header' },
-        el('div', {},
-          el('h2', { class: 'title', text: country.name }),
-          el('div', { class: 'kpi', 'aria-live': 'polite' },
-            el('span', { text: 'Offline: ' }),
-            el('strong', { text: offline.length }),
-            el('span', { text: ` / Total: ${total}` })
-          ),
+    function renderCountryCard(country,cams){
+      const wrap=el('div',{class:'card',id:`country-${country.id}`});
+      const {online,offline}=byStatus(cams);
+      const total=cams.length;
+      const health=total?Math.round((online.length/total)*100):0;
+      const header=el('div',{class:'card-header'},
+        el('div',{},
+          el('h2',{class:'title',text:country.name}),
+          el('div',{class:'kpi','aria-live':'polite'},
+            el('span',{text:'Offline: '}),
+            el('strong',{text:offline.length}),
+            el('span',{text:` / Total: ${total}`})
+          )
         ),
-        el('span', { class: `badge ${health >= 90 ? 'ok':'bad'}`, title: 'Salud (online / total)' }, `${fmtPercent(health)}%`)
+        el('span',{class:`badge ${health>=90?'ok':'bad'}`,title:'Salud (online / total)'},`${fmtPercent(health)}%`)
       );
-
-      // Chart
-      const chartWrap = el('div', { class: 'chart-wrap' }, el('canvas', { id: `chart-${country.id}` }));
-
-      // Accordions
-      const sections = el('div', { class: 'sections' },
-        buildAccordion('Cámaras offline', offline, 'off'),
-        buildAccordion('Cámaras online', online, 'on')
+      const chartWrap=el('div',{class:'chart-wrap'},el('canvas',{id:`chart-${country.id}`}));
+      const sections=el('div',{class:'sections'},
+        buildAccordion('Cámaras offline',offline,'off'),
+        buildAccordion('Cámaras online',online,'on')
       );
-
       wrap.appendChild(header);
       wrap.appendChild(chartWrap);
       wrap.appendChild(sections);
       return wrap;
     }
 
-    function buildAccordion(title, list, mode){
-      const countPill = el('span', { class: 'pill' }, `${list.length}`);
-      const statePill = el('span', { class: `state ${mode}` }, mode === 'on' ? 'ONLINE' : 'OFFLINE');
-      const summary = el('summary', {}, statePill, el('strong', { style: 'flex:1' }, ` ${title}`), countPill);
-
-      const container = el('details');
+    function buildAccordion(title,list,mode){
+      const countPill=el('span',{class:'pill'},`${list.length}`);
+      const statePill=el('span',{class:`state ${mode}`},mode==='on'?'ONLINE':'OFFLINE');
+      const summary=el('summary',{},statePill,el('strong',{style:'flex:1'},` ${title}`),countPill);
+      const container=el('details');
       container.appendChild(summary);
-
-      const items = list
-        .sort((a,b) => a.name.localeCompare(b.name, 'es'))
-        .map(cam => el('div', { class:'item' },
-          el('div', {},
-            el('div', { class: 'name', text: cam.name || 'Cámara' }),
-            el('div', { class: 'muted' }, (cam.status||'').toUpperCase())
-          ),
-          el('div', { class: 'muted' }, cam.site || cam.location || '')
-        ));
-
-      const listWrap = el('div', { class: 'list' }, items);
+      const items=list
+        .sort((a,b)=>(a.name||'').localeCompare(b.name||'','es'))
+        .map(cam=>{
+          const id=getCamId(cam);
+          return el('div',{class:'item',onClick:()=>goToCamera(id)},
+            el('div',{},
+              el('div',{class:'name',text:cam.name||'Cámara'}),
+              el('div',{class:'muted'},(cam.status||'').toUpperCase())
+            ),
+            el('div',{class:'muted'},cam.site||cam.location||'')
+          );
+        });
+      const listWrap=el('div',{class:'list'},items);
       container.appendChild(listWrap);
       return container;
     }
 
-    function upsertChart(countryId, online, offline){
+    // upsertChart robusto
+    function upsertChart(countryId,online,offline){
       const id = `chart-${countryId}`;
-      const ctx = document.getElementById(id).getContext('2d');
+      const canvas = document.getElementById(id);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
       const existing = charts.get(countryId);
-      const data = { labels:['Online','Offline'], datasets:[{ data:[online, offline], backgroundColor:['#0EA5E9', '#ef4444'] }] };
-      const opts = { plugins:{ legend:{ display:false }, title:{ display:true, text:`Salud de red`, color:'#fff', font:{ size:14 } } }, responsive:true, maintainAspectRatio:false, cutout:'60%', animation:false };
-      if(existing){ existing.data = data; existing.update(); }
-      else { charts.set(countryId, new Chart(ctx, { type:'doughnut', data, options:opts })); }
-    }
 
-    // === Datos + Render ===
-    async function load(){
-      const subtitle = document.getElementById('subtitle');
-      const container = document.getElementById('countries');
-      const errorBox = document.getElementById('errorBox');
-      errorBox.style.display = 'none';
+      if (existing && existing.canvas && existing.canvas !== canvas) {
+        try { existing.destroy(); } catch(_) {}
+        charts.delete(countryId);
+      }
 
-      try{
-        const ctrl = new AbortController();
-        const t = setTimeout(()=>ctrl.abort(), 10000); // 10s
-        const res = await fetch(apiUrl, { signal: ctrl.signal });
-        clearTimeout(t);
-        if(!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+      const data = {
+        labels: ['Online','Offline'],
+        datasets: [{ data:[online,offline], backgroundColor:['#0EA5E9','#ef4444'] }]
+      };
+      const opts = {
+        plugins:{ legend:{display:false}, title:{display:true,text:'Salud de red',color:'#fff',font:{size:14}} },
+        responsive:true, maintainAspectRatio:false, cutout:'60%', animation:false
+      };
 
-        subtitle.textContent = `Actualizado: ${new Date().toLocaleString('es-PE')}`;
-
-        // Group by country id (string compare)
-        const byCountry = new Map(countries.map(c => [c.id, []]));
-        for(const cam of data){
-          const pid = String(cam.pais ?? cam.country_id ?? cam.country ?? '');
-          if(byCountry.has(pid)) byCountry.get(pid).push(cam);
-        }
-
-        // Render both country cards
-        container.innerHTML = '';
-        countries.forEach(country => {
-          const cams = byCountry.get(country.id) || [];
-          const card = renderCountryCard(country, cams);
-          container.appendChild(card);
-
-          const { online, offline } = byStatus(cams);
-          upsertChart(country.id, online.length, offline.length);
-        });
-
-      }catch(err){
-        console.error('Error cargando las cámaras:', err);
-        errorBox.textContent = 'No se pudo cargar la información. Reintentaremos en el próximo ciclo.';
-        errorBox.style.display = 'block';
+      if (charts.has(countryId)) {
+        const chart = charts.get(countryId);
+        chart.data = data;
+        chart.update();
+      } else {
+        const chart = new Chart(ctx, { type:'doughnut', data, options:opts });
+        chart.canvas = canvas;
+        charts.set(countryId, chart);
       }
     }
 
-    load();
-    // refresco cada 10 minutos
-    setInterval(load, 10 * 60 * 1000);
+    function getCamId(cam){ return String(cam.id??cam.uid??cam.uuid??cam.codigo??cam.code??cam.name); }
+    function indexCameras(arr){ camIndex.clear(); for(const c of arr){ camIndex.set(getCamId(c),c);} }
+    function goToCamera(id){ location.hash=`#/camera/${encodeURIComponent(id)}`; }
+    function showList(){ document.getElementById('countries').classList.remove('hidden'); document.getElementById('detailView').classList.add('hidden'); }
+
+    function showDetail(cam){
+      const id=getCamId(cam);
+      const rec = findDeviceForCam(cam);
+
+      // helpers
+      const r = (k, fallback='—') => (rec && rec[k]!=null && String(rec[k]).trim()!=='' ? String(rec[k]) : fallback);
+      const getRTMP = () => rec ? (rec['RTMP '] || rec['RTMP'] || '—') : '—';
+
+      const ipCam = r('IpCam', null);
+      const ipRed = r('IpRed', null);
+      const panelUrl = ipCam ? `http://${ipCam}` : (ipRed ? `http://${ipRed}` : '#');
+      const streamUrl = getRTMP();
+
+      const detail=document.getElementById('detailView');
+      document.getElementById('countries').classList.add('hidden');
+      detail.classList.remove('hidden');
+      detail.innerHTML='';
+
+      // Cabecera de detalle (fuera del grid)
+      const actions = el('div',{class:'detail-actions'},
+        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
+        el('h2',{text:cam.name || r('Nombre','Cámara')})
+      );
+
+      // Secciones como cards
+      const meta=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
+        el('div',{class:'muted',text:'Ubicación'}),el('div',{text:cam.site||cam.location||r('Ubicacion','—')}),
+        el('div',{class:'muted',text:'País'}),el('div',{text:String(cam.pais??cam.country??'—')}),
+        el('div',{class:'muted',text:'ID'}),el('div',{text:id})
+      );
+
+      const tecnicos=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'IP Cámara'}),el('div',{text:r('IpCam')}),
+        el('div',{class:'muted',text:'Modelo'}),el('div',{text:r('Modelo')}),
+        el('div',{class:'muted',text:'Marca'}),el('div',{text:r('Marca')}),
+        el('div',{class:'muted',text:'N° Serie'}),el('div',{text:r('NumeroSerie')}),
+        el('div',{class:'muted',text:'Instalación'}),el('div',{text:r('Instalacion')})
+      );
+
+      const red=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'Operador'}),el('div',{text:r('Operador')}),
+        el('div',{class:'muted',text:'Titular línea'}),el('div',{text:r('TitularLinea')}),
+        el('div',{class:'muted',text:'Línea'}),el('div',{text:r('Linea')}),
+        el('div',{class:'muted',text:'Red (SSID)'}),el('div',{text:r('Red')}),
+        el('div',{class:'muted',text:'IP Red'}),el('div',{text:r('IpRed')}),
+        el('div',{class:'muted',text:'Usuario módem'}),el('div',{text:r('UsuarioModem')}),
+        el('div',{class:'muted',text:'Clave módem'}),el('div',{text:r('ClaveModem')}),
+        el('div',{class:'muted',text:'Clave WiFi'}),el('div',{text:r('ClaveWifi')})
+      );
+
+      const enlaces=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'Stream (RTSP/RTMP)'}),
+        el('div',{},
+          streamUrl && streamUrl !== '—'
+            ? el('a',{href:streamUrl,target:'_blank',rel:'noopener',class:'link'},streamUrl)
+            : el('span',{text:'—'})
+        ),
+        el('div',{class:'muted',text:'Panel'}),
+        el('div',{},
+          panelUrl && panelUrl !== '#'
+            ? el('a',{href:panelUrl,target:'_blank',rel:'noopener',class:'link'},panelUrl)
+            : el('span',{text:'—'})
+        )
+      );
+
+      const lat = r('Latitud');
+      const lon = r('Longitud');
+
+      const ubicacion=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'Latitud'}),el('div',{text:lat}),
+        el('div',{class:'muted',text:'Longitud'}),el('div',{text:lon}),
+        el('div',{class:'muted',text:'Ver en mapa'}),
+        el('div',{},
+          (lat !== '—' && lon !== '—')
+            ? el('button',{
+                class:'btn',
+                onClick:()=>{ 
+                  const url = `https://www.google.com/maps?q=${encodeURIComponent(lat)},${encodeURIComponent(lon)}`;
+                  window.open(url,'_blank');
+                }
+              },'🌍 Abrir en Google Maps')
+            : el('span',{text:'No disponible'})
+        )
+      );
+
+      const contacto=el('div',{class:'kv'},
+        el('div',{class:'muted',text:'Host'}),el('div',{text:r('Host')}),
+        el('div',{class:'muted',text:'Contacto Host'}),el('div',{text:r('ContactoHost')}),
+        el('div',{class:'muted',text:'Técnico'}),el('div',{text:r('Tecnico')}),
+        el('div',{class:'muted',text:'Contacto Técnico'}),el('div',{text:r('ContactoTecnico')})
+      );
+
+      // Construir grid y montar cards
+      const grid = el('div',{class:'detail-grid'});
+      grid.appendChild(sectionCard('Resumen', meta));
+      grid.appendChild(sectionCard('Información técnica', tecnicos));
+      grid.appendChild(sectionCard('Red y conectividad', red));
+      grid.appendChild(sectionCard('Enlaces', enlaces));
+      grid.appendChild(sectionCard('Ubicación', ubicacion));
+      grid.appendChild(sectionCard('Contacto', contacto));
+
+      detail.appendChild(actions);
+      detail.appendChild(grid);
+    }
+
+    function router(){
+      const h=location.hash||'#/';
+      const m=h.match(/^#\/camera\/([^#?]+)/);
+      if(m){ const id=decodeURIComponent(m[1]); const cam=camIndex.get(id); if(cam){showDetail(cam);} else {showList();} }
+      else{showList();}
+    }
+
+    window.addEventListener('hashchange',router);
+
+    // Carga y render principal
+    async function load(manual=false){
+      const subtitle=document.getElementById('subtitle');
+      const container=document.getElementById('countries');
+      const errorBox=document.getElementById('errorBox');
+      const refreshBtn=document.getElementById('refreshBtn');
+
+      errorBox.style.display='none';
+      const prevText = subtitle.textContent;
+      if(manual){ subtitle.textContent='Actualizando…'; }
+      if(refreshBtn){ refreshBtn.disabled = true; refreshBtn.textContent = 'Actualizando…'; }
+
+      try{
+        if (devices.length === 0) await loadDevices();
+
+        const ctrl=new AbortController();
+        const t=setTimeout(()=>ctrl.abort(),10000);
+        const res=await fetch(apiUrl,{signal:ctrl.signal});
+        clearTimeout(t);
+        if(!res.ok)throw new Error(`HTTP ${res.status}`);
+        const data=await res.json();
+
+        currentData=Array.isArray(data)?data:[];
+        indexCameras(currentData);
+        subtitle.textContent=`Actualizado: ${new Date().toLocaleString('es-PE')}`;
+
+        const byCountry=new Map(countries.map(c=>[c.id,[]]));
+        for(const cam of currentData){
+          const pid=String(cam.pais??cam.country_id??cam.country??'');
+          if(byCountry.has(pid))byCountry.get(pid).push(cam);
+        }
+
+        // Destruir charts antes de rehacer DOM
+        charts.forEach(ch => { try { ch.destroy(); } catch(_){} });
+        charts.clear();
+
+        // Re-render
+        container.innerHTML='';
+        countries.forEach(country=>{
+          const cams=byCountry.get(country.id)||[];
+          const card=renderCountryCard(country,cams);
+          container.appendChild(card);
+          const {online,offline}=byStatus(cams);
+          upsertChart(country.id,online.length,offline.length);
+        });
+
+        router();
+      }catch(err){
+        console.error('Error cargando las cámaras:',err);
+        errorBox.textContent='No se pudo cargar la información. Intenta nuevamente.';
+        errorBox.style.display='block';
+        if(manual){ subtitle.textContent = prevText; }
+      }finally{
+        if(refreshBtn){ refreshBtn.disabled = false; refreshBtn.textContent = '↻ Actualizar'; }
+      }
+    }
+
+    // Carga inicial
+    (async () => {
+      await loadDevices();
+      await load();
+    })();
+
+    // Botón para actualizar bajo demanda
+    document.getElementById('refreshBtn').addEventListener('click', ()=> load(true));
   </script>
 </body>
 </html>
