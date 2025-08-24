@@ -8,6 +8,7 @@
   <style>
     :root{
       --bg:#111;--card:#18181b;--muted:#a1a1aa;--ok:#0EA5E9;--bad:#ef4444;--border:#27272a;
+      --skel-base:#1c1c20; --skel-highlight:#242428;
     }
     *{box-sizing:border-box}
     body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:#fff}
@@ -62,9 +63,30 @@
     .card-header-sm .title{font-size:18px}
     .card-body{padding:8px 16px 16px}
 
-    /* Botón volver separado del grid */
     .detail-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .loading{color:var(--muted);font-size:14px;margin:8px 0 0 0}
+
+    /* Skeleton */
+    @keyframes shimmer {
+      0% {background-position: -200% 0;}
+      100% {background-position: 200% 0;}
+    }
+    .skeleton{
+      display:block;
+      position:relative;
+      overflow:hidden;
+      background:linear-gradient(90deg,var(--skel-base),var(--skel-highlight),var(--skel-base));
+      background-size:200% 100%;
+      animation:shimmer 1.2s infinite linear;
+      border-radius:8px;
+    }
+    .skel-line{height:12px;margin:8px 0}
+    .skel-line.lg{height:18px}
+    .skel-line.xs{height:8px}
+    .kv.skeleton-kv{
+      grid-template-columns:140px 1fr;
+    }
+    .skel-pill{height:28px;width:90px;border-radius:999px}
   </style>
 </head>
 <body>
@@ -229,12 +251,10 @@
 
     // ========= RESOLVER ID NUMÉRICO PARA DETALLE =========
     function resolveDeviceId(cam){
-      // El listado trae "idcamara": "55" -> endpoint /devices/55/
       if (cam && cam.idcamara != null) {
         const n = Number(String(cam.idcamara).trim());
         if (Number.isFinite(n)) return n;
       }
-      // fallback por si algún caso trae otro campo con dígitos
       const candidates = [cam?.id, cam?.code, cam?.codigo, cam?.uid, cam?.uuid, cam?.name].filter(v => v != null);
       for (const val of candidates){
         const m = String(val).match(/^\d+$/) || String(val).match(/\d+/);
@@ -244,6 +264,48 @@
         }
       }
       return null;
+    }
+
+    // ============ Skeletons para detalle ============
+    function skelLine(w='100%', cls=''){
+      return el('div',{class:`skeleton skel-line ${cls}`, style:`width:${w}`});
+    }
+    function skelKV(rows=4){
+      const wrap = el('div',{class:'kv skeleton-kv'});
+      for(let i=0;i<rows;i++){
+        wrap.appendChild(skelLine('90px','xs')); // label
+        wrap.appendChild(skelLine('70%'));      // value
+      }
+      return wrap;
+    }
+    function renderDetailSkeleton(cam){
+      const detail=document.getElementById('detailView');
+      detail.innerHTML='';
+
+      const actions = el('div',{class:'detail-actions'},
+        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
+        el('h2',{text:cam.name || 'Cámara'})
+      );
+
+      const grid = el('div',{class:'detail-grid'});
+
+      // 6 cards con estructura similar
+      const cardResumen = sectionCard('Resumen', skelKV(4));
+      const cardTec = sectionCard('Información técnica', skelKV(6));
+      const cardRed = sectionCard('Red y conectividad', skelKV(8));
+      const cardEnlaces = sectionCard('Enlaces', skelKV(2));
+      const cardUbi = sectionCard('Ubicación', skelKV(3));
+      const cardContacto = sectionCard('Contacto', skelKV(4));
+
+      grid.appendChild(cardResumen);
+      grid.appendChild(cardTec);
+      grid.appendChild(cardRed);
+      grid.appendChild(cardEnlaces);
+      grid.appendChild(cardUbi);
+      grid.appendChild(cardContacto);
+
+      detail.appendChild(actions);
+      detail.appendChild(grid);
     }
 
     // ============ Detalle dinámico ============
@@ -382,15 +444,9 @@
       const detail=document.getElementById('detailView');
       document.getElementById('countries').classList.add('hidden');
       detail.classList.remove('hidden');
-      detail.innerHTML='';
 
-      const header = el('div',{class:'detail-actions'},
-        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
-        el('h2',{text:cam.name || 'Cámara'})
-      );
-      const loading = el('p',{class:'loading',text:'Cargando detalles de la cámara…'});
-      detail.appendChild(header);
-      detail.appendChild(loading);
+      // Renderiza skeletons primero
+      renderDetailSkeleton(cam);
 
       try{
         const rec = await fetchCameraDetail(cam);
@@ -398,10 +454,15 @@
       }catch(err){
         console.error('Error cargando detalle:', err);
 
-        // Fallback con datos del listado y aviso
+        // Fallback con datos del listado + aviso
+        detail.innerHTML='';
+        const actions = el('div',{class:'detail-actions'},
+          el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
+          el('h2',{text:cam.name || 'Cámara'})
+        );
+
         const grid = el('div',{class:'detail-grid'});
 
-        // Resumen mínimo
         const meta=el('div',{class:'kv'},
           el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
           el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || '—'}),
@@ -409,7 +470,6 @@
           el('div',{class:'muted',text:'ID'}),el('div',{text:getCamId(cam)})
         );
 
-        // Ubicación desde el listado (si está)
         const latStr = cam.latitud, lonStr = cam.longitud;
         const latNum = Number(latStr), lonNum = Number(lonStr);
         const hasCoords = Number.isFinite(latNum) && Number.isFinite(lonNum);
@@ -431,6 +491,8 @@
         grid.appendChild(sectionCard('Resumen', meta));
         grid.appendChild(sectionCard('Ubicación', ubicFallback));
         grid.appendChild(sectionCard('Aviso', warn));
+
+        detail.appendChild(actions);
         detail.appendChild(grid);
       }
     }
