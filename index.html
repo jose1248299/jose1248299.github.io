@@ -13,14 +13,14 @@
     *{box-sizing:border-box}
     body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:#fff}
 
-    /* Barra superior con botón */
+    /* Barra superior */
     .topbar{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 8px;gap:12px}
     h1{margin:0;font-weight:700}
     .actions{display:flex;gap:8px;align-items:center}
 
     .subtitle{margin:0 16px 16px;color:var(--muted);font-size:14px}
     .grid{display:grid;gap:16px;padding:0 16px 24px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-    .card{position:relative;background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
     .card-header{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 0}
     .title{font-size:20px;margin:0}
     .kpi{font-size:14px;color:var(--muted)}
@@ -54,20 +54,22 @@
     .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:12px 0}
     .kv .field{display:flex;flex-direction:column;gap:4px}
     .kv label{font-size:12px;color:var(--muted)}
-    .input, .textarea{
-      width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#111;color:#fff;
-    }
-    .textarea{min-height:80px;resize:vertical}
+    .input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#111;color:#fff}
 
-    /* Cards detalle con layout responsivo */
+    /* Cards detalle */
     .detail-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-top:12px}
-    .card-header-sm{padding:16px 16px 0}
-    .card-header-sm .title{font-size:18px}
+    .card-header-sm{padding:16px 16px 0;display:flex;justify-content:space-between;align-items:center}
+    .card-header-sm .title{font-size:18px;margin:0}
     .card-body{padding:8px 16px 16px}
 
-    /* Acciones detalle */
+    /* Acciones */
     .detail-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-    .loading{color:var(--muted);font-size:14px;margin:8px 0 0 0}
+    .card-actions{display:flex;gap:8px;margin-top:8px}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}
+
+    /* Botón editar en header */
+    .edit-btn{font-size:14px;cursor:pointer;border:none;background:none;color:var(--muted)}
+    .edit-btn:hover{color:#fff}
 
     /* Skeleton */
     @keyframes shimmer { 0% {background-position: -200% 0;} 100% {background-position: 200% 0;} }
@@ -76,18 +78,6 @@
     .skel-line.lg{height:18px}
     .skel-line.xs{height:8px}
     .kv.skeleton-kv{grid-template-columns:140px 1fr}
-    .skel-pill{height:28px;width:90px;border-radius:999px}
-
-    /* Edit button (pencil) */
-    .card-edit{
-      position:absolute; right:12px; bottom:12px;
-      display:inline-flex; align-items:center; gap:6px;
-      padding:8px 10px; border:1px solid var(--border); border-radius:999px; background:#131316; color:#fff; cursor:pointer;
-      font-size:12px;
-    }
-    .card-edit:hover{border-color:#3a3a3f}
-    .card-actions{display:flex;gap:8px;margin-top:8px}
-    .hint{font-size:12px;color:var(--muted);margin-top:6px}
   </style>
 </head>
 <body>
@@ -151,16 +141,16 @@
     }
 
     function sectionCard(title, key, bodyContent, editable=true){
-      const wrap = el('div',{class:'card section-card', 'data-section':key});
-      const header = el('div',{class:'card-header-sm'}, el('h3',{class:'title',text:title}));
+      const wrap = el('div',{class:'card section-card','data-section':key});
+      const header = el('div',{class:'card-header-sm'});
+      header.appendChild(el('h3',{class:'title',text:title}));
+      if (editable){
+        header.appendChild(el('button',{class:'edit-btn',title:'Editar sección',onClick:()=>enterEditSection(key)},'✏️'));
+      }
       const body = el('div',{class:'card-body'});
       (Array.isArray(bodyContent)?bodyContent:[bodyContent]).forEach(ch => body.appendChild(ch));
       wrap.appendChild(header);
       wrap.appendChild(body);
-      if (editable){
-        const editBtn = el('button',{class:'card-edit', onClick:()=>enterEditSection(key)},'✏️ Editar');
-        wrap.appendChild(editBtn);
-      }
       return wrap;
     }
 
@@ -495,7 +485,7 @@
         const input = el('input',{class:'input', name:k, value: r(currentDetailRecord,k,'')});
         // Validaciones simples
         if (sectionKey==='ubicacion' && (k==='latitud' || k==='longitud')) input.type='number', input.step='any';
-        if (k.includes('clave')) input.type='text'; // podrías usar 'password' si prefieres
+        if (k.includes('clave')) input.type='text'; // puedes usar 'password' si prefieres
         fieldWrap.appendChild(label);
         fieldWrap.appendChild(input);
         form.appendChild(fieldWrap);
@@ -564,7 +554,7 @@
         const btns = formEl.parentElement.querySelectorAll('button');
         btns.forEach(b=>b.disabled=true);
 
-        const res = await apiPatch(deviceNumId, payload);
+        await apiPatch(deviceNumId, payload);
 
         // Merge al record actual
         Object.assign(currentDetailRecord, payload);
