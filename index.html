@@ -51,7 +51,7 @@
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:12px 0}
 
-    /* NUEVO: cards dentro del detalle con layout responsivo */
+    /* Cards dentro del detalle con layout responsivo */
     .detail-grid{
       display:grid;
       gap:16px;
@@ -64,6 +64,7 @@
 
     /* Botón volver separado del grid */
     .detail-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .loading{color:var(--muted);font-size:14px;margin:8px 0 0 0}
   </style>
 </head>
 <body>
@@ -84,8 +85,11 @@
   <p id="errorBox" class="error" style="display:none"></p>
 
   <script>
-    // === Config ===
-    const apiUrl = 'https://cams.misolas.com/v1/cameras/';
+    // === Endpoints ===
+    const listApiUrl = 'https://cams.misolas.com/v1/cameras/';
+    const detailApiBase = 'https://api3.misolas.com/devices/'; // devices/{id}/
+
+    // Países visibles en tablero
     const countries = [
       { id: '1', name: 'Perú' },
       { id: '2', name: 'Chile' }
@@ -93,38 +97,6 @@
 
     const charts = new Map(); // countryId -> Chart instance
     let currentData = [];
-
-    // === Devices.json ===
-    let devices = [];
-    const devicesByName = new Map();
-    const norm = s => String(s||'').trim().toLowerCase();
-
-    async function loadDevices() {
-      try {
-        const res = await fetch('Devices.json', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        devices = Array.isArray(json) ? json : [];
-        devicesByName.clear();
-        for (const d of devices) {
-          if (d && d.Nombre) devicesByName.set(norm(d.Nombre), d);
-        }
-      } catch (e) {
-        console.warn('No se pudo cargar Devices.json:', e);
-      }
-    }
-
-    function findDeviceForCam(cam){
-      const byName = devicesByName.get(norm(cam.name));
-      if (byName) return byName;
-      if (cam.site || cam.location) {
-        const target = norm(cam.site || cam.location);
-        const hit = devices.find(d => norm(d.Ubicacion) === target);
-        if (hit) return hit;
-      }
-      return null;
-    }
-
     const camIndex = new Map();
 
     const byStatus = (arr) => ({
@@ -203,7 +175,7 @@
               el('div',{class:'name',text:cam.name||'Cámara'}),
               el('div',{class:'muted'},(cam.status||'').toUpperCase())
             ),
-            el('div',{class:'muted'},cam.site||cam.location||'')
+            el('div',{class:'muted'}, cam.site || cam.location || cam.ciudad || '')
           );
         });
       const listWrap=el('div',{class:'list'},items);
@@ -244,67 +216,104 @@
       }
     }
 
-    function getCamId(cam){ return String(cam.id??cam.uid??cam.uuid??cam.codigo??cam.code??cam.name); }
+    // Prioriza idcamara del listado
+    function getCamId(cam){
+      return String(
+        cam.idcamara ?? cam.id ?? cam.uid ?? cam.uuid ?? cam.codigo ?? cam.code ?? cam.name
+      );
+    }
+
     function indexCameras(arr){ camIndex.clear(); for(const c of arr){ camIndex.set(getCamId(c),c);} }
     function goToCamera(id){ location.hash=`#/camera/${encodeURIComponent(id)}`; }
     function showList(){ document.getElementById('countries').classList.remove('hidden'); document.getElementById('detailView').classList.add('hidden'); }
 
-    function showDetail(cam){
-      const id=getCamId(cam);
-      const rec = findDeviceForCam(cam);
+    // ========= RESOLVER ID NUMÉRICO PARA DETALLE =========
+    function resolveDeviceId(cam){
+      // El listado trae "idcamara": "55" -> endpoint /devices/55/
+      if (cam && cam.idcamara != null) {
+        const n = Number(String(cam.idcamara).trim());
+        if (Number.isFinite(n)) return n;
+      }
+      // fallback por si algún caso trae otro campo con dígitos
+      const candidates = [cam?.id, cam?.code, cam?.codigo, cam?.uid, cam?.uuid, cam?.name].filter(v => v != null);
+      for (const val of candidates){
+        const m = String(val).match(/^\d+$/) || String(val).match(/\d+/);
+        if (m){
+          const num = Number(m[0]);
+          if (Number.isFinite(num)) return num;
+        }
+      }
+      return null;
+    }
 
-      // helpers
+    // ============ Detalle dinámico ============
+    async function fetchCameraDetail(cam){
+      const numId = resolveDeviceId(cam);
+      if (!Number.isFinite(numId)) {
+        throw new Error('No se pudo resolver un ID numérico para esta cámara');
+      }
+      const url = `${detailApiBase}${encodeURIComponent(numId)}/`;
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 10000);
+      try{
+        const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+        clearTimeout(t);
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    function sectionCardContent(cam, rec){
       const r = (k, fallback='—') => (rec && rec[k]!=null && String(rec[k]).trim()!=='' ? String(rec[k]) : fallback);
-      const getRTMP = () => rec ? (rec['RTMP '] || rec['RTMP'] || '—') : '—';
 
-      const ipCam = r('IpCam', null);
-      const ipRed = r('IpRed', null);
+      // Stream: primero RTMP del detalle; si no hay, usa HLS del listado
+      const hls = Array.isArray(cam.streams) ? cam.streams.find(s => s.format === 'hls') : null;
+      const streamPrimary = r('rtmp', '') || (hls?.url || '—');
+
+      const ipCam = r('ip_cam', null);
+      const ipRed = r('ip_red', null);
       const panelUrl = ipCam ? `http://${ipCam}` : (ipRed ? `http://${ipRed}` : '#');
-      const streamUrl = getRTMP();
 
-      const detail=document.getElementById('detailView');
-      document.getElementById('countries').classList.add('hidden');
-      detail.classList.remove('hidden');
-      detail.innerHTML='';
+      const latStr = r('latitud');
+      const lonStr = r('longitud');
+      const latNum = Number(latStr);
+      const lonNum = Number(lonStr);
+      const hasCoords = Number.isFinite(latNum) && Number.isFinite(lonNum);
 
-      // Cabecera de detalle (fuera del grid)
-      const actions = el('div',{class:'detail-actions'},
-        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
-        el('h2',{text:cam.name || r('Nombre','Cámara')})
-      );
-
-      // Secciones como cards
       const meta=el('div',{class:'kv'},
         el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
-        el('div',{class:'muted',text:'Ubicación'}),el('div',{text:cam.site||cam.location||r('Ubicacion','—')}),
+        el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || r('ubicacion','—')}),
         el('div',{class:'muted',text:'País'}),el('div',{text:String(cam.pais??cam.country??'—')}),
-        el('div',{class:'muted',text:'ID'}),el('div',{text:id})
+        el('div',{class:'muted',text:'ID'}),el('div',{text:getCamId(cam)})
       );
 
       const tecnicos=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'IP Cámara'}),el('div',{text:r('IpCam')}),
-        el('div',{class:'muted',text:'Modelo'}),el('div',{text:r('Modelo')}),
-        el('div',{class:'muted',text:'Marca'}),el('div',{text:r('Marca')}),
-        el('div',{class:'muted',text:'N° Serie'}),el('div',{text:r('NumeroSerie')}),
-        el('div',{class:'muted',text:'Instalación'}),el('div',{text:r('Instalacion')})
+        el('div',{class:'muted',text:'IP Cámara'}),el('div',{text:r('ip_cam')}),
+        el('div',{class:'muted',text:'Modelo'}),el('div',{text:r('modelo')}),
+        el('div',{class:'muted',text:'Marca'}),el('div',{text:r('marca')}),
+        el('div',{class:'muted',text:'N° Serie'}),el('div',{text:r('numero_serie')}),
+        el('div',{class:'muted',text:'Instalación'}),el('div',{text:r('instalacion')}),
+        el('div',{class:'muted',text:'Energía'}),el('div',{text:r('energia')})
       );
 
       const red=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Operador'}),el('div',{text:r('Operador')}),
-        el('div',{class:'muted',text:'Titular línea'}),el('div',{text:r('TitularLinea')}),
-        el('div',{class:'muted',text:'Línea'}),el('div',{text:r('Linea')}),
-        el('div',{class:'muted',text:'Red (SSID)'}),el('div',{text:r('Red')}),
-        el('div',{class:'muted',text:'IP Red'}),el('div',{text:r('IpRed')}),
-        el('div',{class:'muted',text:'Usuario módem'}),el('div',{text:r('UsuarioModem')}),
-        el('div',{class:'muted',text:'Clave módem'}),el('div',{text:r('ClaveModem')}),
-        el('div',{class:'muted',text:'Clave WiFi'}),el('div',{text:r('ClaveWifi')})
+        el('div',{class:'muted',text:'Operador'}),el('div',{text:r('operador')}),
+        el('div',{class:'muted',text:'Titular línea'}),el('div',{text:r('titular_linea')}),
+        el('div',{class:'muted',text:'Línea'}),el('div',{text:r('linea')}),
+        el('div',{class:'muted',text:'Red (SSID)'}),el('div',{text:r('red')}),
+        el('div',{class:'muted',text:'IP Red'}),el('div',{text:r('ip_red')}),
+        el('div',{class:'muted',text:'Usuario módem'}),el('div',{text:r('usuario_modem')}),
+        el('div',{class:'muted',text:'Clave módem'}),el('div',{text:r('clave_modem')}),
+        el('div',{class:'muted',text:'Clave WiFi'}),el('div',{text:r('clave_wifi')})
       );
 
       const enlaces=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Stream (RTSP/RTMP)'}),
+        el('div',{class:'muted',text:'Stream (RTSP/RTMP/HLS)'}),
         el('div',{},
-          streamUrl && streamUrl !== '—'
-            ? el('a',{href:streamUrl,target:'_blank',rel:'noopener',class:'link'},streamUrl)
+          streamPrimary && streamPrimary !== '—'
+            ? el('a',{href:streamPrimary,target:'_blank',rel:'noopener',class:'link'},streamPrimary)
             : el('span',{text:'—'})
         ),
         el('div',{class:'muted',text:'Panel'}),
@@ -315,20 +324,17 @@
         )
       );
 
-      const lat = r('Latitud');
-      const lon = r('Longitud');
-
       const ubicacion=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Latitud'}),el('div',{text:lat}),
-        el('div',{class:'muted',text:'Longitud'}),el('div',{text:lon}),
+        el('div',{class:'muted',text:'Latitud'}),el('div',{text:latStr}),
+        el('div',{class:'muted',text:'Longitud'}),el('div',{text:lonStr}),
         el('div',{class:'muted',text:'Ver en mapa'}),
         el('div',{},
-          (lat !== '—' && lon !== '—')
+          hasCoords
             ? el('button',{
                 class:'btn',
-                onClick:()=>{ 
-                  const url = `https://www.google.com/maps?q=${encodeURIComponent(lat)},${encodeURIComponent(lon)}`;
-                  window.open(url,'_blank');
+                onClick:()=>{
+                  const url = `https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`;
+                  window.open(url,'_blank','noopener');
                 }
               },'🌍 Abrir en Google Maps')
             : el('span',{text:'No disponible'})
@@ -336,13 +342,30 @@
       );
 
       const contacto=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Host'}),el('div',{text:r('Host')}),
-        el('div',{class:'muted',text:'Contacto Host'}),el('div',{text:r('ContactoHost')}),
-        el('div',{class:'muted',text:'Técnico'}),el('div',{text:r('Tecnico')}),
-        el('div',{class:'muted',text:'Contacto Técnico'}),el('div',{text:r('ContactoTecnico')})
+        el('div',{class:'muted',text:'Host'}),el('div',{text:r('host')}),
+        el('div',{class:'muted',text:'Contacto Host'}),el('div',{text:r('contacto_host')}),
+        el('div',{class:'muted',text:'Técnico'}),el('div',{text:r('tecnico')}),
+        el('div',{class:'muted',text:'Contacto Técnico'}),el('div',{text:r('contacto_tecnico')})
       );
 
-      // Construir grid y montar cards
+      return { meta, tecnicos, red, enlaces, ubicacion, contacto };
+    }
+
+    function renderDetail(cam, rec){
+      const r = (k, fallback='—') => (rec && rec[k]!=null && String(rec[k]).trim()!=='' ? String(rec[k]) : fallback);
+
+      const detail=document.getElementById('detailView');
+      document.getElementById('countries').classList.add('hidden');
+      detail.classList.remove('hidden');
+      detail.innerHTML='';
+
+      const actions = el('div',{class:'detail-actions'},
+        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
+        el('h2',{text: cam.name || r('nombre','Cámara')})
+      );
+
+      const { meta, tecnicos, red, enlaces, ubicacion, contacto } = sectionCardContent(cam, rec);
+
       const grid = el('div',{class:'detail-grid'});
       grid.appendChild(sectionCard('Resumen', meta));
       grid.appendChild(sectionCard('Información técnica', tecnicos));
@@ -355,6 +378,63 @@
       detail.appendChild(grid);
     }
 
+    async function showDetail(cam){
+      const detail=document.getElementById('detailView');
+      document.getElementById('countries').classList.add('hidden');
+      detail.classList.remove('hidden');
+      detail.innerHTML='';
+
+      const header = el('div',{class:'detail-actions'},
+        el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
+        el('h2',{text:cam.name || 'Cámara'})
+      );
+      const loading = el('p',{class:'loading',text:'Cargando detalles de la cámara…'});
+      detail.appendChild(header);
+      detail.appendChild(loading);
+
+      try{
+        const rec = await fetchCameraDetail(cam);
+        renderDetail(cam, rec);
+      }catch(err){
+        console.error('Error cargando detalle:', err);
+
+        // Fallback con datos del listado y aviso
+        const grid = el('div',{class:'detail-grid'});
+
+        // Resumen mínimo
+        const meta=el('div',{class:'kv'},
+          el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
+          el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || '—'}),
+          el('div',{class:'muted',text:'País'}),el('div',{text:String(cam.pais??cam.country??'—')}),
+          el('div',{class:'muted',text:'ID'}),el('div',{text:getCamId(cam)})
+        );
+
+        // Ubicación desde el listado (si está)
+        const latStr = cam.latitud, lonStr = cam.longitud;
+        const latNum = Number(latStr), lonNum = Number(lonStr);
+        const hasCoords = Number.isFinite(latNum) && Number.isFinite(lonNum);
+        const ubicFallback = el('div',{class:'kv'},
+          el('div',{class:'muted',text:'Latitud'}), el('div',{text: latStr ?? '—'}),
+          el('div',{class:'muted',text:'Longitud'}), el('div',{text: lonStr ?? '—'}),
+          el('div',{class:'muted',text:'Ver en mapa'}),
+          el('div',{}, hasCoords
+            ? el('button',{
+                class:'btn',
+                onClick:()=>window.open(`https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`,'_blank','noopener')
+              },'🌍 Abrir en Google Maps')
+            : el('span',{text:'No disponible'})
+          )
+        );
+
+        const warn = el('p',{class:'error',text:'No se pudo cargar el detalle de la cámara. Se muestran datos básicos del listado.'});
+
+        grid.appendChild(sectionCard('Resumen', meta));
+        grid.appendChild(sectionCard('Ubicación', ubicFallback));
+        grid.appendChild(sectionCard('Aviso', warn));
+        detail.appendChild(grid);
+      }
+    }
+
     function router(){
       const h=location.hash||'#/';
       const m=h.match(/^#\/camera\/([^#?]+)/);
@@ -364,7 +444,7 @@
 
     window.addEventListener('hashchange',router);
 
-    // Carga y render principal
+    // ============ Carga y render principal ============
     async function load(manual=false){
       const subtitle=document.getElementById('subtitle');
       const container=document.getElementById('countries');
@@ -377,11 +457,9 @@
       if(refreshBtn){ refreshBtn.disabled = true; refreshBtn.textContent = 'Actualizando…'; }
 
       try{
-        if (devices.length === 0) await loadDevices();
-
         const ctrl=new AbortController();
         const t=setTimeout(()=>ctrl.abort(),10000);
-        const res=await fetch(apiUrl,{signal:ctrl.signal});
+        const res=await fetch(listApiUrl,{signal:ctrl.signal});
         clearTimeout(t);
         if(!res.ok)throw new Error(`HTTP ${res.status}`);
         const data=await res.json();
@@ -422,10 +500,7 @@
     }
 
     // Carga inicial
-    (async () => {
-      await loadDevices();
-      await load();
-    })();
+    load();
 
     // Botón para actualizar bajo demanda
     document.getElementById('refreshBtn').addEventListener('click', ()=> load(true));
