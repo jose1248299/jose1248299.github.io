@@ -8,7 +8,7 @@
   <style>
     :root{
       --bg:#111;--card:#18181b;--muted:#a1a1aa;--ok:#0EA5E9;--bad:#ef4444;--border:#27272a;
-      --skel-base:#1c1c20; --skel-highlight:#242428;
+      --skel-base:#1c1c20; --skel-highlight:#242428; --accent:#0EA5E9;
     }
     *{box-sizing:border-box}
     body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:#fff}
@@ -20,7 +20,7 @@
 
     .subtitle{margin:0 16px 16px;color:var(--muted);font-size:14px}
     .grid{display:grid;gap:16px;padding:0 16px 24px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+    .card{position:relative;background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
     .card-header{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 0}
     .title{font-size:20px;margin:0}
     .kpi{font-size:14px;color:var(--muted)}
@@ -49,44 +49,45 @@
     .detail{padding:16px}
     .detail h2{margin:0 0 8px}
     .btn{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:#141414;color:#fff;cursor:pointer}
+    .btn.primary{border-color:transparent;background:var(--accent);color:#001018}
     .btn[disabled]{opacity:.6;cursor:not-allowed}
     .kv{display:grid;grid-template-columns:140px 1fr;gap:8px;margin:12px 0}
-
-    /* Cards dentro del detalle con layout responsivo */
-    .detail-grid{
-      display:grid;
-      gap:16px;
-      grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
-      margin-top:12px;
+    .kv .field{display:flex;flex-direction:column;gap:4px}
+    .kv label{font-size:12px;color:var(--muted)}
+    .input, .textarea{
+      width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#111;color:#fff;
     }
+    .textarea{min-height:80px;resize:vertical}
+
+    /* Cards detalle con layout responsivo */
+    .detail-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-top:12px}
     .card-header-sm{padding:16px 16px 0}
     .card-header-sm .title{font-size:18px}
     .card-body{padding:8px 16px 16px}
 
+    /* Acciones detalle */
     .detail-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .loading{color:var(--muted);font-size:14px;margin:8px 0 0 0}
 
     /* Skeleton */
-    @keyframes shimmer {
-      0% {background-position: -200% 0;}
-      100% {background-position: 200% 0;}
-    }
-    .skeleton{
-      display:block;
-      position:relative;
-      overflow:hidden;
-      background:linear-gradient(90deg,var(--skel-base),var(--skel-highlight),var(--skel-base));
-      background-size:200% 100%;
-      animation:shimmer 1.2s infinite linear;
-      border-radius:8px;
-    }
+    @keyframes shimmer { 0% {background-position: -200% 0;} 100% {background-position: 200% 0;} }
+    .skeleton{display:block;position:relative;overflow:hidden;background:linear-gradient(90deg,var(--skel-base),var(--skel-highlight),var(--skel-base));background-size:200% 100%;animation:shimmer 1.2s infinite linear;border-radius:8px}
     .skel-line{height:12px;margin:8px 0}
     .skel-line.lg{height:18px}
     .skel-line.xs{height:8px}
-    .kv.skeleton-kv{
-      grid-template-columns:140px 1fr;
-    }
+    .kv.skeleton-kv{grid-template-columns:140px 1fr}
     .skel-pill{height:28px;width:90px;border-radius:999px}
+
+    /* Edit button (pencil) */
+    .card-edit{
+      position:absolute; right:12px; bottom:12px;
+      display:inline-flex; align-items:center; gap:6px;
+      padding:8px 10px; border:1px solid var(--border); border-radius:999px; background:#131316; color:#fff; cursor:pointer;
+      font-size:12px;
+    }
+    .card-edit:hover{border-color:#3a3a3f}
+    .card-actions{display:flex;gap:8px;margin-top:8px}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}
   </style>
 </head>
 <body>
@@ -110,6 +111,7 @@
     // === Endpoints ===
     const listApiUrl = 'https://cams.misolas.com/v1/cameras/';
     const detailApiBase = 'https://api3.misolas.com/devices/'; // devices/{id}/
+    const updateSuffix = '/update/';
 
     // Países visibles en tablero
     const countries = [
@@ -120,6 +122,9 @@
     const charts = new Map(); // countryId -> Chart instance
     let currentData = [];
     const camIndex = new Map();
+
+    // guardo el último detalle para el cam actual, para comparar cambios
+    let currentDetailRecord = null;
 
     const byStatus = (arr) => ({
       online: arr.filter(c => (c.status||'').toLowerCase() === 'online'),
@@ -145,13 +150,17 @@
       return node;
     }
 
-    function sectionCard(title, ...children){
-      const wrap = el('div',{class:'card section-card'});
+    function sectionCard(title, key, bodyContent, editable=true){
+      const wrap = el('div',{class:'card section-card', 'data-section':key});
       const header = el('div',{class:'card-header-sm'}, el('h3',{class:'title',text:title}));
       const body = el('div',{class:'card-body'});
-      children.flat().forEach(ch => body.appendChild(ch));
+      (Array.isArray(bodyContent)?bodyContent:[bodyContent]).forEach(ch => body.appendChild(ch));
       wrap.appendChild(header);
       wrap.appendChild(body);
+      if (editable){
+        const editBtn = el('button',{class:'card-edit', onClick:()=>enterEditSection(key)},'✏️ Editar');
+        wrap.appendChild(editBtn);
+      }
       return wrap;
     }
 
@@ -249,7 +258,7 @@
     function goToCamera(id){ location.hash=`#/camera/${encodeURIComponent(id)}`; }
     function showList(){ document.getElementById('countries').classList.remove('hidden'); document.getElementById('detailView').classList.add('hidden'); }
 
-    // ========= RESOLVER ID NUMÉRICO PARA DETALLE =========
+    // ========= RESOLVER ID NUMÉRICO PARA DETALLE / UPDATE =========
     function resolveDeviceId(cam){
       if (cam && cam.idcamara != null) {
         const n = Number(String(cam.idcamara).trim());
@@ -267,15 +276,10 @@
     }
 
     // ============ Skeletons para detalle ============
-    function skelLine(w='100%', cls=''){
-      return el('div',{class:`skeleton skel-line ${cls}`, style:`width:${w}`});
-    }
+    function skelLine(w='100%', cls=''){ return el('div',{class:`skeleton skel-line ${cls}`, style:`width:${w}`}); }
     function skelKV(rows=4){
       const wrap = el('div',{class:'kv skeleton-kv'});
-      for(let i=0;i<rows;i++){
-        wrap.appendChild(skelLine('90px','xs')); // label
-        wrap.appendChild(skelLine('70%'));      // value
-      }
+      for(let i=0;i<rows;i++){ wrap.appendChild(skelLine('90px','xs')); wrap.appendChild(skelLine('70%')); }
       return wrap;
     }
     function renderDetailSkeleton(cam){
@@ -288,32 +292,39 @@
       );
 
       const grid = el('div',{class:'detail-grid'});
-
-      // 6 cards con estructura similar
-      const cardResumen = sectionCard('Resumen', skelKV(4));
-      const cardTec = sectionCard('Información técnica', skelKV(6));
-      const cardRed = sectionCard('Red y conectividad', skelKV(8));
-      const cardEnlaces = sectionCard('Enlaces', skelKV(2));
-      const cardUbi = sectionCard('Ubicación', skelKV(3));
-      const cardContacto = sectionCard('Contacto', skelKV(4));
-
-      grid.appendChild(cardResumen);
-      grid.appendChild(cardTec);
-      grid.appendChild(cardRed);
-      grid.appendChild(cardEnlaces);
-      grid.appendChild(cardUbi);
-      grid.appendChild(cardContacto);
+      grid.appendChild(sectionCard('Resumen','meta', skelKV(4), false));
+      grid.appendChild(sectionCard('Información técnica','tecnicos', skelKV(6)));
+      grid.appendChild(sectionCard('Red y conectividad','red', skelKV(8)));
+      grid.appendChild(sectionCard('Enlaces','enlaces', skelKV(2)));
+      grid.appendChild(sectionCard('Ubicación','ubicacion', skelKV(3)));
+      grid.appendChild(sectionCard('Contacto','contacto', skelKV(4)));
 
       detail.appendChild(actions);
       detail.appendChild(grid);
     }
 
+    // ============ API helpers ============
+    async function apiPatch(deviceNumId, payload){
+      const url = `${detailApiBase}${encodeURIComponent(deviceNumId)}${updateSuffix}`;
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type':'application/json'
+          // 'Authorization': 'Bearer <token>' // si tu API lo requiere
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok){
+        const text = await res.text().catch(()=> '');
+        throw new Error(`PATCH ${res.status}: ${text || 'error'}`);
+      }
+      return await res.json().catch(()=> ({}));
+    }
+
     // ============ Detalle dinámico ============
     async function fetchCameraDetail(cam){
       const numId = resolveDeviceId(cam);
-      if (!Number.isFinite(numId)) {
-        throw new Error('No se pudo resolver un ID numérico para esta cámara');
-      }
+      if (!Number.isFinite(numId)) throw new Error('No se pudo resolver un ID numérico para esta cámara');
       const url = `${detailApiBase}${encodeURIComponent(numId)}/`;
       const ctrl = new AbortController();
       const t = setTimeout(()=>ctrl.abort(), 10000);
@@ -322,53 +333,86 @@
         clearTimeout(t);
         if(!res.ok) throw new Error(`HTTP ${res.status}`);
         return await res.json();
-      } finally {
-        clearTimeout(t);
-      }
+      } finally { clearTimeout(t); }
     }
 
-    function sectionCardContent(cam, rec){
-      const r = (k, fallback='—') => (rec && rec[k]!=null && String(rec[k]).trim()!=='' ? String(rec[k]) : fallback);
+    // Secciones y mapeo de campos -> etiquetas
+    const SECTION_FIELDS = {
+      tecnicos: {
+        title: 'Información técnica',
+        editable: ['ip_cam','modelo','marca','numero_serie','instalacion','energia'],
+        labels: {
+          ip_cam:'IP Cámara', modelo:'Modelo', marca:'Marca', numero_serie:'N° Serie',
+          instalacion:'Instalación', energia:'Energía'
+        }
+      },
+      red: {
+        title: 'Red y conectividad',
+        editable: ['operador','titular_linea','linea','red','ip_red','usuario_modem','clave_modem','clave_wifi'],
+        labels: {
+          operador:'Operador', titular_linea:'Titular línea', linea:'Línea',
+          red:'Red (SSID)', ip_red:'IP Red', usuario_modem:'Usuario módem',
+          clave_modem:'Clave módem', clave_wifi:'Clave WiFi'
+        }
+      },
+      enlaces: {
+        title: 'Enlaces',
+        editable: ['rtmp'],
+        labels: { rtmp:'Stream RTMP' }
+      },
+      ubicacion: {
+        title: 'Ubicación',
+        editable: ['ubicacion','latitud','longitud'],
+        labels: { ubicacion:'Ubicación (texto)', latitud:'Latitud', longitud:'Longitud' }
+      },
+      contacto: {
+        title: 'Contacto',
+        editable: ['host','contacto_host','tecnico','contacto_tecnico'],
+        labels: { host:'Host', contacto_host:'Contacto Host', tecnico:'Técnico', contacto_tecnico:'Contacto Técnico' }
+      }
+      // 'meta' queda solo lectura
+    };
 
-      // Stream: primero RTMP del detalle; si no hay, usa HLS del listado
+    function r(rec, k, fallback='—'){ return (rec && rec[k]!=null && String(rec[k]).trim()!=='') ? String(rec[k]) : fallback; }
+
+    function buildReadOnlyBodies(cam, rec){
       const hls = Array.isArray(cam.streams) ? cam.streams.find(s => s.format === 'hls') : null;
-      const streamPrimary = r('rtmp', '') || (hls?.url || '—');
+      const streamPrimary = r(rec,'rtmp','') || (hls?.url || '—');
 
-      const ipCam = r('ip_cam', null);
-      const ipRed = r('ip_red', null);
+      const ipCam = r(rec,'ip_cam', null);
+      const ipRed = r(rec,'ip_red', null);
       const panelUrl = ipCam ? `http://${ipCam}` : (ipRed ? `http://${ipRed}` : '#');
 
-      const latStr = r('latitud');
-      const lonStr = r('longitud');
-      const latNum = Number(latStr);
-      const lonNum = Number(lonStr);
+      const latStr = r(rec,'latitud','—');
+      const lonStr = r(rec,'longitud','—');
+      const latNum = Number(latStr), lonNum = Number(lonStr);
       const hasCoords = Number.isFinite(latNum) && Number.isFinite(lonNum);
 
       const meta=el('div',{class:'kv'},
         el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
-        el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || r('ubicacion','—')}),
+        el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || r(rec,'ubicacion','—')}),
         el('div',{class:'muted',text:'País'}),el('div',{text:String(cam.pais??cam.country??'—')}),
         el('div',{class:'muted',text:'ID'}),el('div',{text:getCamId(cam)})
       );
 
       const tecnicos=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'IP Cámara'}),el('div',{text:r('ip_cam')}),
-        el('div',{class:'muted',text:'Modelo'}),el('div',{text:r('modelo')}),
-        el('div',{class:'muted',text:'Marca'}),el('div',{text:r('marca')}),
-        el('div',{class:'muted',text:'N° Serie'}),el('div',{text:r('numero_serie')}),
-        el('div',{class:'muted',text:'Instalación'}),el('div',{text:r('instalacion')}),
-        el('div',{class:'muted',text:'Energía'}),el('div',{text:r('energia')})
+        el('div',{class:'muted',text:'IP Cámara'}),el('div',{text:r(rec,'ip_cam')}),
+        el('div',{class:'muted',text:'Modelo'}),el('div',{text:r(rec,'modelo')}),
+        el('div',{class:'muted',text:'Marca'}),el('div',{text:r(rec,'marca')}),
+        el('div',{class:'muted',text:'N° Serie'}),el('div',{text:r(rec,'numero_serie')}),
+        el('div',{class:'muted',text:'Instalación'}),el('div',{text:r(rec,'instalacion')}),
+        el('div',{class:'muted',text:'Energía'}),el('div',{text:r(rec,'energia')})
       );
 
       const red=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Operador'}),el('div',{text:r('operador')}),
-        el('div',{class:'muted',text:'Titular línea'}),el('div',{text:r('titular_linea')}),
-        el('div',{class:'muted',text:'Línea'}),el('div',{text:r('linea')}),
-        el('div',{class:'muted',text:'Red (SSID)'}),el('div',{text:r('red')}),
-        el('div',{class:'muted',text:'IP Red'}),el('div',{text:r('ip_red')}),
-        el('div',{class:'muted',text:'Usuario módem'}),el('div',{text:r('usuario_modem')}),
-        el('div',{class:'muted',text:'Clave módem'}),el('div',{text:r('clave_modem')}),
-        el('div',{class:'muted',text:'Clave WiFi'}),el('div',{text:r('clave_wifi')})
+        el('div',{class:'muted',text:'Operador'}),el('div',{text:r(rec,'operador')}),
+        el('div',{class:'muted',text:'Titular línea'}),el('div',{text:r(rec,'titular_linea')}),
+        el('div',{class:'muted',text:'Línea'}),el('div',{text:r(rec,'linea')}),
+        el('div',{class:'muted',text:'Red (SSID)'}),el('div',{text:r(rec,'red')}),
+        el('div',{class:'muted',text:'IP Red'}),el('div',{text:r(rec,'ip_red')}),
+        el('div',{class:'muted',text:'Usuario módem'}),el('div',{text:r(rec,'usuario_modem')}),
+        el('div',{class:'muted',text:'Clave módem'}),el('div',{text:r(rec,'clave_modem')}),
+        el('div',{class:'muted',text:'Clave WiFi'}),el('div',{text:r(rec,'clave_wifi')})
       );
 
       const enlaces=el('div',{class:'kv'},
@@ -392,52 +436,158 @@
         el('div',{class:'muted',text:'Ver en mapa'}),
         el('div',{},
           hasCoords
-            ? el('button',{
-                class:'btn',
-                onClick:()=>{
-                  const url = `https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`;
-                  window.open(url,'_blank','noopener');
-                }
-              },'🌍 Abrir en Google Maps')
+            ? el('button',{class:'btn',onClick:()=>window.open(`https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`,'_blank','noopener')},'🌍 Abrir en Google Maps')
             : el('span',{text:'No disponible'})
         )
       );
 
       const contacto=el('div',{class:'kv'},
-        el('div',{class:'muted',text:'Host'}),el('div',{text:r('host')}),
-        el('div',{class:'muted',text:'Contacto Host'}),el('div',{text:r('contacto_host')}),
-        el('div',{class:'muted',text:'Técnico'}),el('div',{text:r('tecnico')}),
-        el('div',{class:'muted',text:'Contacto Técnico'}),el('div',{text:r('contacto_tecnico')})
+        el('div',{class:'muted',text:'Host'}),el('div',{text:r(rec,'host')}),
+        el('div',{class:'muted',text:'Contacto Host'}),el('div',{text:r(rec,'contacto_host')}),
+        el('div',{class:'muted',text:'Técnico'}),el('div',{text:r(rec,'tecnico')}),
+        el('div',{class:'muted',text:'Contacto Técnico'}),el('div',{text:r(rec,'contacto_tecnico')})
       );
 
       return { meta, tecnicos, red, enlaces, ubicacion, contacto };
     }
 
     function renderDetail(cam, rec){
-      const r = (k, fallback='—') => (rec && rec[k]!=null && String(rec[k]).trim()!=='' ? String(rec[k]) : fallback);
-
+      currentDetailRecord = rec; // guarda para comparaciones
       const detail=document.getElementById('detailView');
       document.getElementById('countries').classList.add('hidden');
       detail.classList.remove('hidden');
       detail.innerHTML='';
 
+      const name = cam.name || r(rec,'nombre','Cámara');
+
       const actions = el('div',{class:'detail-actions'},
         el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
-        el('h2',{text: cam.name || r('nombre','Cámara')})
+        el('h2',{text: name})
       );
 
-      const { meta, tecnicos, red, enlaces, ubicacion, contacto } = sectionCardContent(cam, rec);
-
+      const bodies = buildReadOnlyBodies(cam, rec);
       const grid = el('div',{class:'detail-grid'});
-      grid.appendChild(sectionCard('Resumen', meta));
-      grid.appendChild(sectionCard('Información técnica', tecnicos));
-      grid.appendChild(sectionCard('Red y conectividad', red));
-      grid.appendChild(sectionCard('Enlaces', enlaces));
-      grid.appendChild(sectionCard('Ubicación', ubicacion));
-      grid.appendChild(sectionCard('Contacto', contacto));
+      grid.appendChild(sectionCard('Resumen', 'meta', bodies.meta, false));
+      grid.appendChild(sectionCard('Información técnica', 'tecnicos', bodies.tecnicos, true));
+      grid.appendChild(sectionCard('Red y conectividad', 'red', bodies.red, true));
+      grid.appendChild(sectionCard('Enlaces', 'enlaces', bodies.enlaces, true));
+      grid.appendChild(sectionCard('Ubicación', 'ubicacion', bodies.ubicacion, true));
+      grid.appendChild(sectionCard('Contacto', 'contacto', bodies.contacto, true));
 
       detail.appendChild(actions);
       detail.appendChild(grid);
+    }
+
+    // ======== Modo edición por card ========
+    function enterEditSection(sectionKey){
+      const def = SECTION_FIELDS[sectionKey];
+      if (!def) return;
+
+      const section = document.querySelector(`.section-card[data-section="${sectionKey}"]`);
+      if (!section) return;
+      const body = section.querySelector('.card-body');
+      body.innerHTML = '';
+
+      const form = el('div',{class:'kv'});
+      def.editable.forEach(k=>{
+        const fieldWrap = el('div',{class:'field'});
+        const label = el('label',{text:def.labels[k] || k});
+        const input = el('input',{class:'input', name:k, value: r(currentDetailRecord,k,'')});
+        // Validaciones simples
+        if (sectionKey==='ubicacion' && (k==='latitud' || k==='longitud')) input.type='number', input.step='any';
+        if (k.includes('clave')) input.type='text'; // podrías usar 'password' si prefieres
+        fieldWrap.appendChild(label);
+        fieldWrap.appendChild(input);
+        form.appendChild(fieldWrap);
+      });
+
+      const errBox = el('p',{class:'error',style:'display:none'});
+      const actions = el('div',{class:'card-actions'},
+        el('button',{class:'btn',onClick:()=>exitEditSection(sectionKey)},'Cancelar'),
+        el('button',{class:'btn primary',onClick:()=>saveSection(sectionKey,form,errBox)},'Guardar')
+      );
+      const hint = el('div',{class:'hint',text:'Solo se guardarán los campos modificados.'});
+
+      body.appendChild(form);
+      body.appendChild(actions);
+      body.appendChild(errBox);
+      body.appendChild(hint);
+    }
+
+    function exitEditSection(sectionKey){
+      // Re-renderear solo esa sección con los datos actuales
+      const section = document.querySelector(`.section-card[data-section="${sectionKey}"] .card-body`);
+      if (!section) return;
+      const cam = getCurrentCamFromHash();
+      if (!cam) return;
+      const bodies = buildReadOnlyBodies(cam, currentDetailRecord);
+      const node = bodies[sectionKey];
+      section.innerHTML='';
+      section.appendChild(node);
+    }
+
+    function diffPayload(sectionKey, formEl){
+      const payload = {};
+      const def = SECTION_FIELDS[sectionKey];
+      def.editable.forEach(k=>{
+        const input = formEl.querySelector(`[name="${k}"]`);
+        if (!input) return;
+        const original = r(currentDetailRecord,k,'');
+        const val = String(input.value ?? '');
+        if (val !== String(original)) payload[k] = val;
+      });
+      return payload;
+    }
+
+    async function saveSection(sectionKey, formEl, errBox){
+      try{
+        const cam = getCurrentCamFromHash();
+        if (!cam) throw new Error('No se encontró la cámara actual');
+        const deviceNumId = resolveDeviceId(cam);
+        if (!Number.isFinite(deviceNumId)) throw new Error('ID de dispositivo inválido');
+
+        // Validaciones simples para ubicación
+        if (sectionKey==='ubicacion'){
+          const lat = formEl.querySelector('[name="latitud"]')?.value?.trim();
+          const lon = formEl.querySelector('[name="longitud"]')?.value?.trim();
+          if (lat && isNaN(Number(lat))) throw new Error('Latitud debe ser numérica');
+          if (lon && isNaN(Number(lon))) throw new Error('Longitud debe ser numérica');
+        }
+
+        const payload = diffPayload(sectionKey, formEl);
+        if (Object.keys(payload).length===0){
+          exitEditSection(sectionKey);
+          return;
+        }
+
+        // UI: deshabilitar botones
+        const btns = formEl.parentElement.querySelectorAll('button');
+        btns.forEach(b=>b.disabled=true);
+
+        const res = await apiPatch(deviceNumId, payload);
+
+        // Merge al record actual
+        Object.assign(currentDetailRecord, payload);
+
+        // Rerender solo esa sección
+        exitEditSection(sectionKey);
+      }catch(e){
+        console.error(e);
+        errBox.textContent = e.message || 'Error al guardar';
+        errBox.style.display='block';
+      }finally{
+        // re-habilitar
+        const btns = formEl.parentElement?.querySelectorAll?.('button');
+        btns && btns.forEach(b=>b.disabled=false);
+      }
+    }
+
+    function getCurrentCamFromHash(){
+      const h=location.hash||'#/';
+      const m=h.match(/^#\/camera\/([^#?]+)/);
+      if(!m) return null;
+      const id=decodeURIComponent(m[1]);
+      return camIndex.get(id) || null;
     }
 
     async function showDetail(cam){
@@ -445,7 +595,7 @@
       document.getElementById('countries').classList.add('hidden');
       detail.classList.remove('hidden');
 
-      // Renderiza skeletons primero
+      // Skeletons
       renderDetailSkeleton(cam);
 
       try{
@@ -454,7 +604,7 @@
       }catch(err){
         console.error('Error cargando detalle:', err);
 
-        // Fallback con datos del listado + aviso
+        // Fallback básico
         detail.innerHTML='';
         const actions = el('div',{class:'detail-actions'},
           el('button',{class:'btn',onClick:()=>{location.hash='#/';}},'← Volver'),
@@ -462,7 +612,6 @@
         );
 
         const grid = el('div',{class:'detail-grid'});
-
         const meta=el('div',{class:'kv'},
           el('div',{class:'muted',text:'Estado'}),el('div',{text:(cam.status||'').toUpperCase()}),
           el('div',{class:'muted',text:'Ubicación'}),el('div',{text: cam.site || cam.location || cam.ciudad || '—'}),
@@ -478,19 +627,16 @@
           el('div',{class:'muted',text:'Longitud'}), el('div',{text: lonStr ?? '—'}),
           el('div',{class:'muted',text:'Ver en mapa'}),
           el('div',{}, hasCoords
-            ? el('button',{
-                class:'btn',
-                onClick:()=>window.open(`https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`,'_blank','noopener')
-              },'🌍 Abrir en Google Maps')
+            ? el('button',{class:'btn',onClick:()=>window.open(`https://www.google.com/maps?q=${encodeURIComponent(latNum)},${encodeURIComponent(lonNum)}`,'_blank','noopener')},'🌍 Abrir en Google Maps')
             : el('span',{text:'No disponible'})
           )
         );
 
-        const warn = el('p',{class:'error',text:'No se pudo cargar el detalle de la cámara. Se muestran datos básicos del listado.'});
+        const warn = el('p',{class:'error',text:'No se pudo cargar el detalle de la cámara. Edición no disponible.'});
 
-        grid.appendChild(sectionCard('Resumen', meta));
-        grid.appendChild(sectionCard('Ubicación', ubicFallback));
-        grid.appendChild(sectionCard('Aviso', warn));
+        grid.appendChild(sectionCard('Resumen','meta', meta, false));
+        grid.appendChild(sectionCard('Ubicación','ubicacion', ubicFallback, false));
+        grid.appendChild(sectionCard('Aviso','aviso', warn, false));
 
         detail.appendChild(actions);
         detail.appendChild(grid);
