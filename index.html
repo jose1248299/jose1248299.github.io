@@ -145,7 +145,7 @@
       const header = el('div',{class:'card-header-sm'});
       header.appendChild(el('h3',{class:'title',text:title}));
       if (editable){
-        header.appendChild(el('button',{class:'edit-btn',title:'Editar sección',onClick:()=>enterEditSection(key)},'✏️'));
+        header.appendChild(el('button',{class:'edit-btn',title:'Editar sección',onClick:()=>enterEditSection(key)},'⚙️'));
       }
       const body = el('div',{class:'card-body'});
       (Array.isArray(bodyContent)?bodyContent:[bodyContent]).forEach(ch => body.appendChild(ch));
